@@ -21,6 +21,7 @@ class DeepSurvModel(SurvivalModel):
         hidden_layers: list[int] | None = None,
         dropout: float = 0.1,
         lr: float = 1e-3,
+        weight_decay: float = 0.0,
         epochs: int = 100,
         batch_size: int = 256,
         val_fraction: float = 0.2,
@@ -29,6 +30,7 @@ class DeepSurvModel(SurvivalModel):
         self._hidden_layers = hidden_layers or [64, 64]
         self._dropout = dropout
         self._lr = lr
+        self._weight_decay = weight_decay
         self._epochs = epochs
         self._batch_size = batch_size
         self._val_fraction = val_fraction
@@ -53,7 +55,7 @@ class DeepSurvModel(SurvivalModel):
             dropout=self._dropout,
         )
 
-        self._model = CoxPH(net, tt.optim.Adam(self._lr))
+        self._model = CoxPH(net, tt.optim.Adam(self._lr, weight_decay=self._weight_decay))
 
         # Train / val split
         x = X.astype("float32")

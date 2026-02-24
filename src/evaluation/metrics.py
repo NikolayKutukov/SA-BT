@@ -162,6 +162,61 @@ def calibration_curve(
     return predicted_means, observed_surv
 
 
+# ── single-metric (inner CV) ──────────────────────────────────────────
+
+def compute_single_metric(
+    model: Any,
+    X_train: np.ndarray,
+    T_train: np.ndarray,
+    E_train: np.ndarray,
+    X_test: np.ndarray,
+    T_test: np.ndarray,
+    E_test: np.ndarray,
+    metric: str = "c_index_ipcw",
+    times: np.ndarray | None = None,
+) -> float:
+    """Compute a single metric for HP selection in inner CV.
+
+    Lighter than ``evaluate_model`` — avoids computing metrics that
+    are not needed for the selection criterion.
+    """
+    if metric == "c_index":
+        risk = model.predict_risk(X_test)
+        return concordance_index(T_test, E_test, risk)
+
+    if metric == "c_index_ipcw":
+        risk = model.predict_risk(X_test)
+        return concordance_index_ipcw(T_train, E_train, T_test, E_test, risk)
+
+    if metric == "ibs":
+        if times is None:
+            times = _default_times(T_test, E_test)
+        surv = model.predict_survival_function(X_test, times)
+        return integrated_brier_score(T_train, E_train, T_test, E_test, surv, times)
+
+    if metric == "mean_auc":
+        if times is None:
+            times = _default_times(T_test, E_test)
+        risk = model.predict_risk(X_test)
+        _, mean_auc = time_dependent_auc(
+            T_train, E_train, T_test, E_test, risk, times
+        )
+        return mean_auc
+
+    raise ValueError(
+        f"Unknown metric '{metric}'. Choose from: c_index, c_index_ipcw, ibs, mean_auc"
+    )
+
+
+# Higher is better for these metrics; lower is better for IBS
+METRIC_DIRECTION: dict[str, bool] = {
+    "c_index": True,
+    "c_index_ipcw": True,
+    "ibs": False,
+    "mean_auc": True,
+}
+
+
 # ── convenience ──────────────────────────────────────────────────────
 
 def evaluate_model(

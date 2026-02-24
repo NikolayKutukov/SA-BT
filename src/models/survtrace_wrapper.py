@@ -35,6 +35,7 @@ class SurvTRACEModel(SurvivalModel):
         num_hidden_layers: int = 3,
         num_attention_heads: int = 2,
         intermediate_size: int = 64,
+        dropout: float = 0.0,
         num_durations: int = 100,
         epochs: int = 100,
         batch_size: int = 64,
@@ -49,6 +50,7 @@ class SurvTRACEModel(SurvivalModel):
         self._num_hidden_layers = num_hidden_layers
         self._num_attention_heads = num_attention_heads
         self._intermediate_size = intermediate_size
+        self._dropout = dropout
         self._num_durations = num_durations
         self._epochs = epochs
         self._batch_size = batch_size
@@ -102,6 +104,8 @@ class SurvTRACEModel(SurvivalModel):
             "num_event": self._n_risks,
             "early_stop_patience": self._early_stop_patience,
             "duration_index": self._label_transform.cuts,  # full cut points (predict_surv pads at start)
+            "hidden_dropout_prob": self._dropout,
+            "attention_probs_dropout_prob": self._dropout,
             "checkpoint": kwargs.get("checkpoint", "./checkpoints/survtrace.pt"),
         })
 

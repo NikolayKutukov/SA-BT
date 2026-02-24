@@ -6,7 +6,9 @@ from .metrics import (
     integrated_brier_score,
     time_dependent_auc,
     calibration_curve,
+    compute_single_metric,
     evaluate_model,
+    METRIC_DIRECTION,
 )
 
 __all__ = [
@@ -15,5 +17,7 @@ __all__ = [
     "integrated_brier_score",
     "time_dependent_auc",
     "calibration_curve",
+    "compute_single_metric",
     "evaluate_model",
+    "METRIC_DIRECTION",
 ]
