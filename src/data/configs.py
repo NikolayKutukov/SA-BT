@@ -163,3 +163,40 @@ class Setup5Config(BaseConfig):
     base_censor_rate: float = 0.08
     censor_covariate_idx: int = 0       # "age"
     censor_covariate_effect: float = -0.02  # younger → more censoring
+
+
+# ── Setup Interp – Interpretability experiment ────────────────────────
+
+@dataclass
+class SetupInterpConfig(BaseConfig):
+    n: int = 1000
+    p: int = 12
+    setup_name: str = "setup_interp"
+
+    # Covariates: 8 continuous (AR(1)), 4 binary
+    n_continuous: int = 8
+    n_binary: int = 4
+    ar1_rho: float = 0.3
+
+    # Baseline hazard – Weibull PH (same as Setup 1)
+    weibull_shape: float = 1.5
+    weibull_scale: float = 0.1
+
+    # Important feature effects
+    # x0: linear
+    beta_linear: float = 0.8
+    linear_idx: int = 0
+    # x1: threshold at 0
+    beta_threshold: float = 1.0
+    threshold_idx: int = 1
+    threshold_value: float = 0.0
+    # x2: quadratic (nonlinear)
+    beta_quadratic: float = 0.5
+    quadratic_idx: int = 2
+    # x3: time-varying β(t) = tv_intercept + tv_slope * t
+    tv_idx: int = 3
+    tv_intercept: float = 0.5
+    tv_slope: float = 0.3
+
+    # Censoring: Uniform(0, censor_max) → target ~30-40 %
+    censor_max: float = 12.0

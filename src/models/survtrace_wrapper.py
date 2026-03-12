@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -226,6 +227,60 @@ class SurvTRACEModel(SurvivalModel):
             # Binary indicator for cause k
             data[f"event_{i}"] = (E == cause_k).astype("float32")
         return pd.DataFrame(data)
+
+    def save(self, path: str | Path) -> None:
+        import pickle, torch
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "model_state_dict": self._model.state_dict(),
+            "config": self._config,
+            "label_transform": self._label_transform,
+            "competing": self._competing,
+            "n_risks": self._n_risks,
+            "params": {
+                "n_categorical": self._n_categorical,
+                "vocab_size": self._vocab_size,
+                "hidden_size": self._hidden_size,
+                "num_hidden_layers": self._num_hidden_layers,
+                "num_attention_heads": self._num_attention_heads,
+                "intermediate_size": self._intermediate_size,
+                "dropout": self._dropout,
+                "num_durations": self._num_durations,
+                "epochs": self._epochs,
+                "batch_size": self._batch_size,
+                "lr": self._lr,
+                "weight_decay": self._weight_decay,
+                "val_fraction": self._val_fraction,
+                "early_stop_patience": self._early_stop_patience,
+            },
+        }
+        with open(path, "wb") as f:
+            pickle.dump(state, f)
+
+    @classmethod
+    def load(cls, path: str | Path) -> "SurvTRACEModel":
+        import pickle
+        from ._survtrace.model import SurvTraceSingle, SurvTraceMulti
+
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+        params = state["params"]
+        obj = cls(**params)
+        obj._config = state["config"]
+        obj._label_transform = state["label_transform"]
+        obj._competing = state["competing"]
+        obj._n_risks = state["n_risks"]
+        if obj._competing:
+            obj._model = SurvTraceMulti(obj._config)
+        else:
+            obj._model = SurvTraceSingle(obj._config)
+        obj._model.load_state_dict(state["model_state_dict"])
+        import torch
+        if torch.cuda.is_available():
+            obj._model.cuda()
+            obj._model.use_gpu = True
+        return obj
 
     @staticmethod
     def _interpolate_surv(surv_df, times: np.ndarray) -> np.ndarray:

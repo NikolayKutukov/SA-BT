@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from .base import SurvivalModel
@@ -55,6 +57,10 @@ class DeepSurvModel(SurvivalModel):
             dropout=self._dropout,
         )
 
+        # Move to GPU if available
+        if torch.cuda.is_available():
+            net.cuda()
+
         self._model = CoxPH(net, tt.optim.Adam(self._lr, weight_decay=self._weight_decay))
 
         # Train / val split
@@ -98,6 +104,52 @@ class DeepSurvModel(SurvivalModel):
         # surv_df: index = duration grid, columns = subjects
         # Interpolate to requested times
         return self._interpolate_surv(surv_df, times)
+
+    def save(self, path: str | Path) -> None:
+        import torch, pickle
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "net_state_dict": self._model.net.state_dict(),
+            "baseline_hazards": self._model.compute_baseline_hazards(),
+            "params": {
+                "hidden_layers": self._hidden_layers,
+                "dropout": self._dropout,
+                "lr": self._lr,
+                "weight_decay": self._weight_decay,
+                "epochs": self._epochs,
+                "batch_size": self._batch_size,
+                "val_fraction": self._val_fraction,
+                "patience": self._patience,
+            },
+        }
+        with open(path, "wb") as f:
+            pickle.dump(state, f)
+
+    @classmethod
+    def load(cls, path: str | Path) -> "DeepSurvModel":
+        import torch, pickle
+        import torchtuples as tt
+        from pycox.models import CoxPH
+
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+        params = state["params"]
+        obj = cls(**params)
+        # We need in_features to rebuild the net — infer from state_dict
+        first_key = next(iter(state["net_state_dict"]))
+        in_features = state["net_state_dict"][first_key].shape[1]
+        net = tt.practical.MLPVanilla(
+            in_features, params["hidden_layers"], 1,
+            batch_norm=True, dropout=params["dropout"],
+        )
+        obj._model = CoxPH(net, tt.optim.Adam(params["lr"]))
+        net.load_state_dict(state["net_state_dict"])
+        if torch.cuda.is_available():
+            net.cuda()
+        obj._model.baseline_hazards_ = state["baseline_hazards"]
+        obj._fitted = True
+        return obj
 
     @staticmethod
     def _interpolate_surv(surv_df, times: np.ndarray) -> np.ndarray:

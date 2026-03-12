@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import pickle
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -17,6 +19,27 @@ class SurvivalModel(ABC):
 
     name: str = "base"
     supports_competing_risks: bool = False
+
+    def save(self, path: str | Path) -> None:
+        """Persist the fitted model to disk.
+
+        Subclasses may override for custom serialisation (e.g. torch
+        state_dict).  The default implementation uses pickle.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load(cls, path: str | Path) -> "SurvivalModel":
+        """Load a previously saved model from disk.
+
+        Returns the full model object regardless of the concrete
+        subclass that was saved.
+        """
+        with open(path, "rb") as f:
+            return pickle.load(f)
 
     @abstractmethod
     def fit(

@@ -11,4 +11,5 @@ scikit-survival>=0.23
 torch>=2.0
 torchtuples>=0.2.2
 pycox>=0.2.3
-
+survlimepy>=0.2.0
+survshap>=0.4.0

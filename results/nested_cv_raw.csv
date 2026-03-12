@@ -1,3 +1,0 @@
-repeat,setup,model,fold,c_index,c_index_ipcw,ibs,mean_auc,best_config,inner_cv_score,fit_time_s,n_samples
-0,setup_1,DeepSurv,0,0.7339268839729942,0.7296237467620456,0.13633947613144007,0.8033501247393933,"{'hidden_layers': [256, 256], 'dropout': 0.5, 'lr': 0.0003, 'weight_decay': 0, 'batch_size': 128}",0.7281730431667304,0.22618339999462478,1000
-0,setup_1,DeepSurv,1,0.7400335201988094,0.7364902602486596,0.1156528991311683,0.8229146449915783,"{'hidden_layers': [256, 256], 'dropout': 0.2, 'lr': 0.001, 'weight_decay': 0.001, 'batch_size': 256}",0.7191672158331235,0.12345919999643229,1000

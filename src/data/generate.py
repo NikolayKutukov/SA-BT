@@ -12,12 +12,16 @@ from .censoring import (
     generate_uniform_censoring,
 )
 from .competing_risks import simulate_multistate
+from scipy.integrate import quad
+from scipy.optimize import brentq
+
 from .configs import (
     Setup1Config,
     Setup2Config,
     Setup3Config,
     Setup4Config,
     Setup5Config,
+    SetupInterpConfig,
 )
 from .covariates import generate_covariates_block, generate_covariates_standard
 from .event_times import (
@@ -282,6 +286,142 @@ def generate_setup_5(config: Setup5Config | None = None, seed: int = 42) -> Surv
         "linear": np.array(config.linear_betas),
         "age_quadratic": config.age_quadratic_coeff,
         "age_treatment_interaction": config.age_treatment_interaction,
+    }
+
+    return SurvivalData(
+        X=X, T=T_obs, E=E, feature_names=names,
+        true_event_times=T_event, true_betas=true_betas,
+        setup_name=config.setup_name, config=config,
+    )
+
+
+# ── Setup Interp – Interpretability experiment ───────────────────────
+
+def _risk_score_interp(X: np.ndarray, config: SetupInterpConfig) -> np.ndarray:
+    """Static (time-constant) part of the risk score for the interpretability setup.
+
+    g(x) = 0.8*x0 + 1.0*I(x1 > 0) + 0.5*x2^2
+    """
+    g = (
+        config.beta_linear * X[:, config.linear_idx]
+        + config.beta_threshold * (X[:, config.threshold_idx] > config.threshold_value).astype(float)
+        + config.beta_quadratic * X[:, config.quadratic_idx] ** 2
+    )
+    return g
+
+
+def _sample_interp_event_times(
+    X: np.ndarray,
+    g_static: np.ndarray,
+    config: SetupInterpConfig,
+    rng: np.random.Generator,
+    t_max: float = 50.0,
+) -> np.ndarray:
+    """Event times for interpretability setup via numerical root-finding.
+
+    h(t|x) = h0(t) * exp(g_static + beta(t) * x_tv)
+    where beta(t) = tv_intercept + tv_slope * t
+
+    Uses the same brentq approach as sample_event_times_non_ph but with
+    a pre-computed nonlinear static risk score.
+    """
+    n = X.shape[0]
+    U = rng.uniform(0.0, 1.0, size=n)
+    targets = -np.log(U)
+
+    shape = config.weibull_shape
+    scale = config.weibull_scale
+    tv_intercept = config.tv_intercept
+    tv_slope = config.tv_slope
+    tv_idx = config.tv_idx
+
+    T = np.empty(n)
+    for i in range(n):
+        x_tv = X[i, tv_idx]
+        exp_g = np.exp(g_static[i])
+
+        def cumhaz(t: float) -> float:
+            if t <= 0:
+                return 0.0
+
+            def integrand(s: float) -> float:
+                h0 = shape * scale * s ** (shape - 1)
+                return h0 * np.exp((tv_intercept + tv_slope * s) * x_tv)
+
+            val, _ = quad(integrand, 0, t, limit=100)
+            return exp_g * val
+
+        def equation(t: float) -> float:
+            return cumhaz(t) - targets[i]
+
+        if cumhaz(t_max) < targets[i]:
+            T[i] = t_max
+        else:
+            try:
+                T[i] = brentq(equation, 1e-10, t_max, xtol=1e-8)
+            except ValueError:
+                T[i] = t_max
+
+    return T
+
+
+def generate_setup_interp(
+    config: SetupInterpConfig | None = None, seed: int = 42,
+) -> SurvivalData:
+    """Interpretability scenario: 4 known effects (linear, threshold, nonlinear,
+    time-varying) + 8 noise features.  Designed for SurvLIME / SurvSHAP(t) validation.
+    """
+    if config is None:
+        config = SetupInterpConfig(seed=seed)
+    rng = np.random.default_rng(config.seed)
+
+    X, names = generate_covariates_standard(
+        n=config.n,
+        n_continuous=config.n_continuous,
+        n_binary=config.n_binary,
+        rng=rng,
+        ar1_rho=config.ar1_rho,
+    )
+
+    g_static = _risk_score_interp(X, config)
+
+    T_event = _sample_interp_event_times(X, g_static, config, rng)
+
+    C = generate_uniform_censoring(config.n, config.censor_max, rng)
+    T_obs, E = apply_censoring(T_event, C)
+
+    # Rich true_betas with effect type labels for automated validation
+    true_betas = {
+        "effects": {
+            names[config.linear_idx]: {
+                "type": "linear", "beta": config.beta_linear, "sign": +1,
+            },
+            names[config.threshold_idx]: {
+                "type": "threshold", "beta": config.beta_threshold,
+                "sign": +1, "threshold": config.threshold_value,
+            },
+            names[config.quadratic_idx]: {
+                "type": "nonlinear", "beta": config.beta_quadratic,
+                "sign": +1, "form": "quadratic",
+            },
+            names[config.tv_idx]: {
+                "type": "time_varying",
+                "tv_intercept": config.tv_intercept,
+                "tv_slope": config.tv_slope, "sign": +1,
+            },
+        },
+        "important_features": [
+            names[config.linear_idx],
+            names[config.threshold_idx],
+            names[config.quadratic_idx],
+            names[config.tv_idx],
+        ],
+        "noise_features": [
+            n for i, n in enumerate(names)
+            if i not in {config.linear_idx, config.threshold_idx,
+                         config.quadratic_idx, config.tv_idx}
+        ],
+        "n_important": 4,
     }
 
     return SurvivalData(

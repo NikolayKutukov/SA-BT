@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from .base import SurvivalModel
@@ -87,6 +89,10 @@ class DeepHitModel(SurvivalModel):
             batch_norm=True,
             dropout=self._dropout,
         )
+
+        # Move to GPU if available
+        if torch.cuda.is_available():
+            net.cuda()
 
         # Build model
         if self._competing:
@@ -185,6 +191,75 @@ class DeepHitModel(SurvivalModel):
         for j in range(n_subjects):
             out[j] = np.interp(times, index, cif_for_cause[:, j], left=0.0, right=1.0)
         return np.clip(out, 0.0, 1.0)
+
+    def save(self, path: str | Path) -> None:
+        import pickle
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "net_state_dict": self._model.net.state_dict(),
+            "duration_index": self._duration_index,
+            "competing": self._competing,
+            "n_risks": self._n_risks,
+            "label_transform": self._label_transform,
+            "params": {
+                "hidden_layers": self._hidden_layers,
+                "dropout": self._dropout,
+                "lr": self._lr,
+                "epochs": self._epochs,
+                "batch_size": self._batch_size,
+                "val_fraction": self._val_fraction,
+                "patience": self._patience,
+                "num_durations": self._num_durations,
+                "alpha": self._alpha,
+                "sigma": self._sigma,
+            },
+        }
+        with open(path, "wb") as f:
+            pickle.dump(state, f)
+
+    @classmethod
+    def load(cls, path: str | Path) -> "DeepHitModel":
+        import pickle, torch
+        import torchtuples as tt
+
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+        params = state["params"]
+        obj = cls(**params)
+        obj._competing = state["competing"]
+        obj._n_risks = state["n_risks"]
+        obj._label_transform = state["label_transform"]
+        obj._duration_index = state["duration_index"]
+        # Infer in_features from state_dict
+        first_key = next(iter(state["net_state_dict"]))
+        in_features = state["net_state_dict"][first_key].shape[1]
+        if obj._competing:
+            out_features = obj._n_risks * len(obj._duration_index)
+        else:
+            out_features = len(obj._duration_index)
+        net = tt.practical.MLPVanilla(
+            in_features, params["hidden_layers"], out_features,
+            batch_norm=True, dropout=params["dropout"],
+        )
+        if obj._competing:
+            from pycox.models import DeepHit
+            obj._model = DeepHit(
+                net, tt.optim.Adam(params["lr"]),
+                alpha=params["alpha"], sigma=params["sigma"],
+                duration_index=obj._duration_index,
+            )
+        else:
+            from pycox.models import DeepHitSingle
+            obj._model = DeepHitSingle(
+                net, tt.optim.Adam(params["lr"]),
+                duration_index=obj._duration_index,
+                alpha=params["alpha"], sigma=params["sigma"],
+            )
+        net.load_state_dict(state["net_state_dict"])
+        if torch.cuda.is_available():
+            net.cuda()
+        return obj
 
     @staticmethod
     def _interpolate_surv(surv_df, times: np.ndarray) -> np.ndarray:
