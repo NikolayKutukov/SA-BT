@@ -9,7 +9,7 @@ import pandas as pd
 
 @dataclass
 class SurvivalData:
-    """Standardized output for all synthetic data setups."""
+    """Standardized container for survival analysis datasets."""
 
     # Core arrays
     X: np.ndarray  # (n, p) covariate matrix
@@ -17,25 +17,19 @@ class SurvivalData:
     E: np.ndarray  # (n,) event indicator: 1=event, 0=censored
     feature_names: list[str]
 
-    # Ground-truth metadata
-    true_event_times: np.ndarray  # (n,) uncensored event times
-    true_betas: np.ndarray | dict  # (p,) or dict for non-PH / multi-transition
-    setup_name: str
-    config: object  # the config dataclass used
+    # Dataset identifier
+    dataset_name: str = ""
 
-    # Optional: competing risks (Setup 4)
-    cause: Optional[np.ndarray] = None  # (n,) cause indicator
-    state_history: Optional[list] = None  # per-subject trajectory dicts
+    # Ground-truth metadata (only for synthetic data)
+    true_betas: Optional[np.ndarray | dict] = None
 
     # ── convenience helpers ──────────────────────────────────────────
 
     def to_dataframe(self) -> pd.DataFrame:
-        """Return a single DataFrame with covariates, T, E (and cause)."""
+        """Return a single DataFrame with covariates, T, E."""
         df = pd.DataFrame(self.X, columns=self.feature_names)
         df["T"] = self.T
         df["E"] = self.E
-        if self.cause is not None:
-            df["cause"] = self.cause
         return df
 
     @property
@@ -52,14 +46,10 @@ class SurvivalData:
 
     def summary(self) -> str:
         lines = [
-            f"Setup: {self.setup_name}",
+            f"Dataset: {self.dataset_name}",
             f"  n={self.n}, p={self.p}",
             f"  censoring rate: {self.censoring_rate:.1%}",
             f"  median observed time: {np.median(self.T):.3f}",
             f"  event count: {int(self.E.sum())}",
         ]
-        if self.cause is not None:
-            unique, counts = np.unique(self.cause[self.E == 1], return_counts=True)
-            for u, c in zip(unique, counts):
-                lines.append(f"  cause {int(u)}: {c} events")
         return "\n".join(lines)

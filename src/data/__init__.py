@@ -1,9 +1,5 @@
-from .generate import (
-    generate_setup_1,
-    generate_setup_2,
-    generate_setup_3,
-    generate_setup_4,
-    generate_setup_5,
-    generate_all,
-)
+"""Data loading and generation utilities."""
+
 from .types import SurvivalData
+from .loaders import load_gbsg2, load_metabric, load_dlbcl, load_support, LOADERS, SKIP
+from .synthetic import generate_interpretability_data, generate_tv_interpretability_data

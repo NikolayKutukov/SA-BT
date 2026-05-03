@@ -18,7 +18,7 @@ class CoxPHModel(SurvivalModel):
 
     name = "CoxPH"
 
-    def __init__(self, alpha: float = 0.0, ties: str = "breslow") -> None:
+    def __init__(self, alpha: float = 0.0, ties: str = "efron") -> None:
         self._model = CoxPHSurvivalAnalysis(alpha=alpha, ties=ties)
 
     def fit(self, X: np.ndarray, T: np.ndarray, E: np.ndarray, **kwargs) -> "CoxPHModel":
@@ -33,5 +33,8 @@ class CoxPHModel(SurvivalModel):
         self, X: np.ndarray, times: np.ndarray
     ) -> np.ndarray:
         step_fns = self._model.predict_survival_function(X)
-        out = np.column_stack([fn(times) for fn in step_fns]).T  # (n, len(times))
+        # Clip times to the domain of the step functions (training time range)
+        domain = step_fns[0].domain
+        clipped = np.clip(times, domain[0], domain[1])
+        out = np.column_stack([fn(clipped) for fn in step_fns]).T  # (n, len(times))
         return np.clip(out, 0.0, 1.0)

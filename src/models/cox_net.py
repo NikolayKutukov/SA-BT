@@ -58,5 +58,7 @@ class CoxNetModel(SurvivalModel):
         self, X: np.ndarray, times: np.ndarray
     ) -> np.ndarray:
         step_fns = self._model.predict_survival_function(X)
-        out = np.column_stack([fn(times) for fn in step_fns]).T
+        domain = step_fns[0].domain
+        clipped = np.clip(times, domain[0], domain[1])
+        out = np.column_stack([fn(clipped) for fn in step_fns]).T
         return np.clip(out, 0.0, 1.0)

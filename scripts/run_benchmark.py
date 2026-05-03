@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Run survival model benchmark across all setups.
+"""Run survival model benchmark across all datasets.
 
 Usage:
     python scripts/run_benchmark.py
-    python scripts/run_benchmark.py --setups setup_1 setup_2
+    python scripts/run_benchmark.py --datasets gbsg2 metabric
     python scripts/run_benchmark.py --models cox_ph rsf
     python scripts/run_benchmark.py --seed 123 --outdir results/
 """
@@ -14,31 +14,18 @@ import argparse
 import sys
 from pathlib import Path
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.models import ALL_MODELS
-from src.benchmark.runner import BenchmarkRunner, GENERATORS
+from src.data.loaders import LOADERS
+from src.benchmark.runner import BenchmarkRunner
 
 
 def build_model(name: str):
     """Instantiate a model by name with default hyperparameters."""
-    from src.models import (
-        CoxPHModel, CoxNetModel, RSFModel,
-        DeepSurvModel, DeepHitModel, SurvTRACEModel,
-    )
-
-    factories = {
-        "cox_ph": CoxPHModel,
-        "cox_net": CoxNetModel,
-        "rsf": RSFModel,
-        "deep_surv": DeepSurvModel,
-        "deep_hit": DeepHitModel,
-        "survtrace": SurvTRACEModel,
-    }
-    if name not in factories:
-        raise ValueError(f"Unknown model '{name}'. Choose from: {list(factories)}")
-    return factories[name]()
+    if name not in ALL_MODELS:
+        raise ValueError(f"Unknown model '{name}'. Choose from: {list(ALL_MODELS)}")
+    return ALL_MODELS[name]()
 
 
 def main() -> None:
@@ -54,10 +41,10 @@ def main() -> None:
         help="Output directory for results CSV (default: results/)",
     )
     parser.add_argument(
-        "--setups", nargs="*",
-        default=list(GENERATORS.keys()),
-        choices=list(GENERATORS.keys()),
-        help="Which setups to run (default: all)",
+        "--datasets", nargs="*",
+        default=list(LOADERS.keys()),
+        choices=list(LOADERS.keys()),
+        help="Which datasets to run (default: all)",
     )
     parser.add_argument(
         "--models", nargs="*",
@@ -71,24 +58,22 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Build model instances
     models = [build_model(name) for name in args.models]
 
-    print(f"Setups : {args.setups}")
-    print(f"Models : {[m.name for m in models]}")
-    print(f"Seed   : {args.seed}")
-    print(f"Test%  : {args.test_fraction}")
+    print(f"Datasets: {args.datasets}")
+    print(f"Models  : {[m.name for m in models]}")
+    print(f"Seed    : {args.seed}")
+    print(f"Test%   : {args.test_fraction}")
 
     runner = BenchmarkRunner(
         models=models,
-        setups=args.setups,
+        datasets=args.datasets,
         seed=args.seed,
         test_fraction=args.test_fraction,
     )
 
     results = runner.run(verbose=True)
 
-    # Save results
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     csv_path = outdir / "benchmark_results.csv"

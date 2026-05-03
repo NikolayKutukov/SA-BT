@@ -13,3 +13,4 @@ torchtuples>=0.2.2
 pycox>=0.2.3
 survlimepy>=0.2.0
 survshap>=0.4.0
+SurvSet>=0.2.0

@@ -6,6 +6,13 @@ from pathlib import Path
 
 import numpy as np
 
+# NumPy 2.x removed several aliases that numba/pycox still reference — patch them.
+for _old, _new in {"trapz": "trapezoid", "in1d": "isin", "row_stack": "vstack",
+                    "product": "prod", "cumproduct": "cumprod",
+                    "sometrue": "any", "alltrue": "all"}.items():
+    if not hasattr(np, _old) and hasattr(np, _new):
+        setattr(np, _old, getattr(np, _new))
+
 from .base import SurvivalModel
 
 
@@ -97,13 +104,17 @@ class DeepSurvModel(SurvivalModel):
         return self._model.predict(x).flatten()
 
     def predict_survival_function(
-        self, X: np.ndarray, times: np.ndarray
+        self, X: np.ndarray, times: np.ndarray,
     ) -> np.ndarray:
-        x = X.astype("float32")
-        surv_df = self._model.predict_surv_df(x)
-        # surv_df: index = duration grid, columns = subjects
-        # Interpolate to requested times
-        return self._interpolate_surv(surv_df, times)
+        """Predict S(t|X) = exp(-H0(t) * exp(log_ph(x)))."""
+        log_ph = self._model.predict(X.astype("float32")).flatten()  # (n,)
+
+        bh = self._model.baseline_hazards_
+        cum_bh = np.cumsum(bh.values.flatten().astype(float))
+        H0_at_times = np.interp(times, bh.index.values.astype(float), cum_bh, left=0.0)
+
+        out = np.exp(-H0_at_times[None, :] * np.exp(log_ph)[:, None])
+        return np.clip(out, 0.0, 1.0)
 
     def save(self, path: str | Path) -> None:
         import torch, pickle

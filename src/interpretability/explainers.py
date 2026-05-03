@@ -184,7 +184,7 @@ class SurvLIMEExplainer:
         else:
             fig = ax.get_figure()
 
-        order = np.argsort(np.abs(coefficients))
+        order = np.argsort(feature_names)[::-1]  # alphabetical, reversed for barh (a at top)
         sorted_names = [feature_names[i] for i in order]
         sorted_coefs = coefficients[order]
 
@@ -372,7 +372,7 @@ class SurvSHAPExplainer:
         self,
         X_instances: np.ndarray,
         times: np.ndarray,
-        feature_names: list[str],
+        feature_names: list[str] | None = None,
     ) -> pd.DataFrame:
         """Compute mean absolute SurvSHAP(t) across multiple instances.
 
@@ -399,16 +399,40 @@ class SurvSHAPExplainer:
         stacked = np.stack(all_abs_shap, axis=0)  # (n_individuals, n_features)
         global_importance = np.nanmean(stacked, axis=0)
 
+        names = feature_names if feature_names is not None else self._feature_names
         return pd.DataFrame({
-            "feature": feature_names[:len(global_importance)],
+            "feature": names[:len(global_importance)],
             "mean_abs_shap": global_importance,
         }).sort_values("mean_abs_shap", ascending=False).reset_index(drop=True)
+
+    @staticmethod
+    def _extract_shap_matrix(result: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return (times, var_names, shap_matrix) sorted alphabetically by feature name."""
+        shap_cols = _shap_time_cols(result)
+
+        def _parse_time(col: str) -> float:
+            return float(col.split("=")[-1].strip()) if "=" in col else float(col)
+
+        times = np.array([_parse_time(c) for c in shap_cols])
+        shap_matrix = result[shap_cols].values.astype(float)
+        var_names = result["variable_name"].values if "variable_name" in result.columns else np.arange(shap_matrix.shape[0]).astype(str)
+
+        order = np.argsort(var_names)
+        return times, var_names[order], shap_matrix[order]
+
+    @staticmethod
+    def _normalize_shap(shap_matrix: np.ndarray) -> np.ndarray:
+        """Normalize SHAP values at each time point by sum of absolute values (eq. 5 in paper)."""
+        denom = np.abs(shap_matrix).sum(axis=0, keepdims=True)
+        denom = np.where(denom < 1e-12, 1.0, denom)
+        return shap_matrix / denom
 
     def plot_shap_over_time(
         self,
         result: pd.DataFrame,
         feature_names: list[str],
         highlight_features: list[str] | None = None,
+        normalized: bool = False,
         ax: plt.Axes | None = None,
     ) -> plt.Figure:
         """Line plot of SurvSHAP(t) values vs time for key features.
@@ -418,21 +442,16 @@ class SurvSHAPExplainer:
         result             : from explain() — one individual.
         feature_names      : all feature names.
         highlight_features : features to plot (default: all).
+        normalized         : if True, normalize by sum of |SHAP| at each time point.
         """
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, 6))
         else:
             fig = ax.get_figure()
 
-        # Extract time columns and SHAP values
-        shap_cols = _shap_time_cols(result)
-        # Column names are "t = <value>" — extract the numeric part
-        def _parse_time(col: str) -> float:
-            return float(col.split("=")[-1].strip()) if "=" in col else float(col)
-        times = np.array([_parse_time(c) for c in shap_cols])
-        shap_matrix = result[shap_cols].values.astype(float)
-
-        var_names = result["variable_name"].values if "variable_name" in result.columns else feature_names
+        times, var_names, shap_matrix = self._extract_shap_matrix(result)
+        if normalized:
+            shap_matrix = self._normalize_shap(shap_matrix)
 
         for i, name in enumerate(var_names):
             if i >= shap_matrix.shape[0]:
@@ -443,17 +462,65 @@ class SurvSHAPExplainer:
                 ax.plot(times, shap_matrix[i], label=name, linewidth=2)
 
         ax.set_xlabel("Time")
-        ax.set_ylabel("SurvSHAP(t)")
-        ax.set_title("Time-dependent SHAP values")
+        ylabel = "Normalized SurvSHAP(t)" if normalized else "SurvSHAP(t)"
+        ax.set_ylabel(ylabel)
+        ax.set_title("Time-dependent SHAP values" + (" (normalized)" if normalized else ""))
         ax.legend(loc="best", fontsize="small")
         ax.axhline(0, color="black", linewidth=0.5)
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
         return fig
 
+    def plot_shap_panel(
+        self,
+        result: pd.DataFrame,
+        feature_names: list[str],
+        highlight_features: list[str] | None = None,
+        title: str = "",
+    ) -> plt.Figure:
+        """Two-row panel: raw SurvSHAP(t) on top, normalized on bottom (Fig 3 style).
+
+        Parameters
+        ----------
+        result             : from explain() — one individual.
+        feature_names      : all feature names.
+        highlight_features : features to draw in colour (rest drawn faint).
+        title              : overall figure title.
+        """
+        fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+        times, var_names, shap_matrix = self._extract_shap_matrix(result)
+        norm_matrix = self._normalize_shap(shap_matrix)
+
+        for ax, matrix, ylabel in zip(
+            axes,
+            [shap_matrix, norm_matrix],
+            ["SurvSHAP(t)", "Normalized SurvSHAP(t)"],
+        ):
+            for i, name in enumerate(var_names):
+                if i >= matrix.shape[0]:
+                    break
+                if highlight_features and name not in highlight_features:
+                    ax.plot(times, matrix[i], alpha=0.15, color="gray", linewidth=0.8)
+                else:
+                    ax.plot(times, matrix[i], label=name, linewidth=2)
+
+            ax.set_ylabel(ylabel)
+            ax.axhline(0, color="black", linewidth=0.5)
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc="best", fontsize="small")
+
+        axes[-1].set_xlabel("Time")
+        if title:
+            fig.suptitle(title, fontsize=11)
+        fig.tight_layout()
+        return fig
+
     def plot_global_importance(
         self,
         importance_df: pd.DataFrame,
+        feature_names: list[str] | None = None,
+        highlight_features: list[str] | None = None,
         true_important: list[str] | None = None,
         top_k: int | None = None,
         ax: plt.Axes | None = None,
@@ -475,12 +542,13 @@ class SurvSHAPExplainer:
         if top_k:
             df = df.head(top_k)
 
-        # Reverse for horizontal bar (top feature at top)
-        df = df.iloc[::-1]
+        # Sort alphabetically by feature name (reversed for barh so a appears at top)
+        df = df.sort_values("feature", ascending=True).reset_index(drop=True)
 
+        highlighted = highlight_features or true_important
         colors = []
         for name in df["feature"]:
-            if true_important and name in true_important:
+            if highlighted and name in highlighted:
                 colors.append("steelblue")
             else:
                 colors.append("lightgray")

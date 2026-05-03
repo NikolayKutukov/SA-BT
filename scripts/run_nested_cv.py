@@ -3,7 +3,7 @@
 
 Usage:
     python scripts/run_nested_cv.py
-    python scripts/run_nested_cv.py --setups setup_1 setup_2 --models cox_ph rsf
+    python scripts/run_nested_cv.py --datasets gbsg2 metabric --models cox_ph rsf
     python scripts/run_nested_cv.py --outer-folds 5 --inner-folds 5 --repeats 3
     python scripts/run_nested_cv.py --inner-metric ibs --seed 123
 """
@@ -14,11 +14,11 @@ import argparse
 import sys
 from pathlib import Path
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.models import ALL_MODELS
-from src.benchmark.nested_cv_runner import NestedCVRunner, GENERATORS
+from src.data.loaders import LOADERS
+from src.benchmark.nested_cv_runner import NestedCVRunner
 
 
 def main() -> None:
@@ -34,10 +34,10 @@ def main() -> None:
         help="Output directory for results CSV (default: results/)",
     )
     parser.add_argument(
-        "--setups", nargs="*",
-        default=list(GENERATORS.keys()),
-        choices=list(GENERATORS.keys()),
-        help="Which setups to run (default: all)",
+        "--datasets", nargs="*",
+        default=list(LOADERS.keys()),
+        choices=list(LOADERS.keys()),
+        help="Which datasets to run (default: all)",
     )
     parser.add_argument(
         "--models", nargs="*",
@@ -50,8 +50,8 @@ def main() -> None:
         help="Number of outer CV folds (default: 5)",
     )
     parser.add_argument(
-        "--inner-folds", type=int, default=5,
-        help="Number of inner CV folds for HP tuning (default: 5)",
+        "--inner-folds", type=int, default=3,
+        help="Number of inner CV folds for HP tuning (default: 3)",
     )
     parser.add_argument(
         "--repeats", type=int, default=1,
@@ -64,7 +64,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    print(f"Setups      : {args.setups}")
+    print(f"Datasets    : {args.datasets}")
     print(f"Models      : {args.models}")
     print(f"Outer folds : {args.outer_folds}")
     print(f"Inner folds : {args.inner_folds}")
@@ -74,7 +74,7 @@ def main() -> None:
 
     runner = NestedCVRunner(
         model_names=args.models,
-        setups=args.setups,
+        datasets=args.datasets,
         n_outer_folds=args.outer_folds,
         n_inner_folds=args.inner_folds,
         n_repeats=args.repeats,
@@ -84,22 +84,18 @@ def main() -> None:
 
     results = runner.run(verbose=True)
 
-    # Save results
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # Raw fold-level results
     raw_path = outdir / "nested_cv_raw.csv"
     results.to_csv(str(raw_path))
     print(f"\nRaw fold-level results saved to {raw_path}")
 
-    # Aggregated summary
     print(f"\n{'='*60}")
     print("AGGREGATED RESULTS (mean +/- SD)")
     print(f"{'='*60}")
     print(results.summary())
 
-    # Rank table
     print(f"\n{'='*60}")
     print("MODEL RANKINGS (by IPCW C-index)")
     print(f"{'='*60}")
@@ -107,7 +103,6 @@ def main() -> None:
     if not rank_df.empty:
         print(rank_df.to_string(index=False))
 
-    # Save aggregated results
     agg_path = outdir / "nested_cv_aggregated.csv"
     results.aggregate().to_csv(str(agg_path), index=False)
     print(f"\nAggregated results saved to {agg_path}")

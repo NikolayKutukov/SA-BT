@@ -59,6 +59,13 @@ class CVResultsTable:
             df = df.sort_values(sort_cols).reset_index(drop=True)
         return df
 
+    @classmethod
+    def from_dataframe(cls, df: pd.DataFrame) -> "CVResultsTable":
+        """Restore from a fold-level DataFrame (e.g. loaded from CSV)."""
+        table = cls()
+        table._rows = df.to_dict(orient="records")
+        return table
+
     def aggregate(
         self,
         metric_cols: list[str] | None = None,

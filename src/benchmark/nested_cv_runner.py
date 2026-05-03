@@ -1,118 +1,102 @@
 """Nested cross-validation benchmark runner with hyperparameter tuning.
 
-Implements the evaluation protocol from the guideline:
-  - Outer 5-fold CV for unbiased performance estimation
-  - Inner 5-fold CV for hyperparameter selection via random search
+Implements the evaluation protocol:
+  - Outer K-fold CV for unbiased performance estimation
+  - Inner K-fold CV for hyperparameter selection via random search
   - Aggregation of metrics across folds and repeats (mean +/- SD)
 """
 
 from __future__ import annotations
 
+import json
 import time
 import traceback
 import warnings
+from pathlib import Path
 
 import numpy as np
 from sklearn.model_selection import StratifiedKFold
 
-from src.data.generate import (
-    generate_setup_1,
-    generate_setup_2,
-    generate_setup_3,
-    generate_setup_4,
-    generate_setup_5,
-)
-from src.evaluation.metrics import evaluate_model, concordance_index
+from src.data.loaders import LOADERS, SKIP
+from src.evaluation.metrics import evaluate_model
 from src.models import ALL_MODELS
-from src.models.base import CauseSpecificWrapper
 from src.tuning.search_spaces import sample_configs, SEARCH_BUDGETS
 from src.tuning.random_search import InnerCVSearch
 
 from .cv_results import CVResultsTable
 
 
-GENERATORS = {
-    "setup_1": generate_setup_1,
-    "setup_2": generate_setup_2,
-    "setup_3": generate_setup_3,
-    "setup_4": generate_setup_4,
-    "setup_5": generate_setup_5,
-}
-
-# Which (setup, model_name) pairs to skip
-SKIP = {
-    ("setup_3", "CoxPH"),  # p=2000 >> n=500, unpenalised Cox fails
-}
-
-
 class NestedCVRunner:
-    """Nested cross-validation with HP tuning for all model x setup combinations.
+    """Nested cross-validation with HP tuning for all model x dataset combinations.
 
     Parameters
     ----------
     model_names   : which models to run (keys in ALL_MODELS). Default: all.
-    setups        : which setups to run. Default: all five.
+    datasets      : which datasets to run. Default: all four.
     n_outer_folds : outer CV folds for performance estimation.
     n_inner_folds : inner CV folds for HP selection.
-    n_repeats     : number of independent repeats (different data seeds).
+    n_repeats     : number of independent repeats.
     inner_metric  : metric used for HP selection in inner CV.
     seed          : base random seed.
-    config_timeout : optional per-config time cap in seconds (not enforced
-                     via signal — just skips configs that exceed it).
     """
 
     def __init__(
         self,
         model_names: list[str] | None = None,
-        setups: list[str] | None = None,
+        datasets: list[str] | None = None,
         n_outer_folds: int = 5,
-        n_inner_folds: int = 5,
+        n_inner_folds: int = 3,
         n_repeats: int = 1,
         inner_metric: str = "c_index_ipcw",
         seed: int = 42,
-        config_timeout: float | None = None,
+        cache_dir: str | Path | None = None,
     ) -> None:
         self.model_names = model_names or list(ALL_MODELS.keys())
-        self.setups = setups or list(GENERATORS.keys())
+        self.datasets = datasets or list(LOADERS.keys())
         self.n_outer_folds = n_outer_folds
         self.n_inner_folds = n_inner_folds
         self.n_repeats = n_repeats
         self.inner_metric = inner_metric
         self.seed = seed
-        self.config_timeout = config_timeout
+        self.cache_dir = Path(cache_dir) if cache_dir else None
+
+    def _cache_key(self, repeat: int, dataset: str, model: str, fold: int) -> str:
+        return f"r{repeat}_{dataset}_{model}_f{fold}"
+
+    def _load_cache(self, key: str) -> dict | None:
+        if self.cache_dir is None:
+            return None
+        path = self.cache_dir / f"{key}.json"
+        if path.exists():
+            with open(path) as f:
+                return json.load(f)
+        return None
+
+    def _save_cache(self, key: str, data: dict) -> None:
+        if self.cache_dir is None:
+            return
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        path = self.cache_dir / f"{key}.json"
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
 
     def run(self, verbose: bool = True) -> CVResultsTable:
-        """Execute the full nested CV benchmark.
-
-        Returns
-        -------
-        CVResultsTable with fold-level results for all (repeat, setup, model, fold).
-        """
         results = CVResultsTable()
 
         for repeat in range(self.n_repeats):
-            data_seed = self.seed + repeat * 100
-
-            for setup_idx, setup_name in enumerate(self.setups):
+            for dataset_name in self.datasets:
                 if verbose:
                     print(f"\n{'='*60}")
-                    print(f"Repeat {repeat + 1}/{self.n_repeats} | Setup: {setup_name}")
+                    print(f"Repeat {repeat + 1}/{self.n_repeats} | Dataset: {dataset_name}")
                     print(f"{'='*60}")
 
-                # Generate data
-                data = GENERATORS[setup_name](seed=data_seed + setup_idx)
+                data = LOADERS[dataset_name]()
                 n_samples = len(data.T)
 
                 if verbose:
                     print(data.summary())
 
-                is_competing = data.cause is not None
-
-                # Stratification column
-                stratify_col = (
-                    data.cause.astype(int) if is_competing
-                    else data.E.astype(int)
-                )
+                stratify_col = data.E.astype(int)
 
                 # Outer CV
                 n_outer = min(self.n_outer_folds, _min_class_count(stratify_col))
@@ -135,23 +119,15 @@ class NestedCVRunner:
                     E_train = data.E[train_idx]
                     E_test = data.E[test_idx]
 
-                    cause_train = cause_test = None
-                    if is_competing:
-                        cause_train = data.cause[train_idx]
-                        cause_test = data.cause[test_idx]
-
-                    # Evaluation time grid
-                    times = _eval_times(T_test, E_test)
-
                     for model_name in self.model_names:
                         model_class = ALL_MODELS[model_name]
                         display_name = model_class.name if hasattr(model_class, 'name') else model_name
 
-                        if (setup_name, display_name) in SKIP:
+                        if (dataset_name, display_name) in SKIP:
                             if verbose:
                                 print(f"  SKIP {display_name} (incompatible)")
                             results.add(
-                                repeat, setup_name, display_name, fold_idx,
+                                repeat, dataset_name, display_name, fold_idx,
                                 {"status": "skipped"}, n_samples=n_samples,
                             )
                             continue
@@ -163,68 +139,66 @@ class NestedCVRunner:
                             )
 
                         try:
-                            # ── Inner CV: HP search ──
-                            rng = np.random.default_rng(
-                                self.seed + repeat * 1000 + fold_idx * 100
-                                + hash(model_name) % 1000
-                            )
-                            configs = sample_configs(
-                                model_name,
-                                SEARCH_BUDGETS.get(model_name, 10),
-                                rng,
-                            )
+                            cache_key = self._cache_key(repeat, dataset_name, model_name, fold_idx)
+                            cached = self._load_cache(cache_key)
 
-                            searcher = InnerCVSearch(
-                                model_class=model_class,
-                                model_name=model_name,
-                                n_inner_folds=self.n_inner_folds,
-                                metric=self.inner_metric,
-                                seed=self.seed + repeat * 10 + fold_idx,
-                            )
+                            if cached is not None:
+                                # Restore from cache — skip tuning
+                                best_config = cached["best_config"]
+                                inner_score = cached["inner_score"]
+                                if verbose:
+                                    print(f"    [cached] Best config: {best_config}")
+                            else:
+                                # Inner CV: HP search
+                                rng = np.random.default_rng(
+                                    self.seed + repeat * 1000 + fold_idx * 100
+                                    + hash(model_name) % 1000
+                                )
+                                configs = sample_configs(
+                                    model_name,
+                                    SEARCH_BUDGETS.get(model_name, 10),
+                                    rng,
+                                )
 
-                            best_config, inner_score = searcher.search(
-                                X_train, T_train, E_train, configs,
-                                cause=cause_train,
-                            )
+                                searcher = InnerCVSearch(
+                                    model_class=model_class,
+                                    model_name=model_name,
+                                    n_inner_folds=self.n_inner_folds,
+                                    metric=self.inner_metric,
+                                    seed=self.seed + repeat * 10 + fold_idx,
+                                )
+
+                                best_config, inner_score = searcher.search(
+                                    X_train, T_train, E_train, configs,
+                                )
+
+                                self._save_cache(cache_key, {
+                                    "best_config": best_config,
+                                    "inner_score": float(inner_score) if not np.isnan(inner_score) else None,
+                                })
 
                             if verbose:
-                                print(f"    Best config: {best_config}")
-                                direction = "(higher=better)" if searcher.higher_is_better else "(lower=better)"
-                                score_str = f"{inner_score:.4f}" if not np.isnan(inner_score) else "N/A"
+                                if cached is None:
+                                    print(f"    Best config: {best_config}")
+                                direction = "(higher=better)" if self.inner_metric in ("c_index", "c_index_ipcw", "mean_auc") else "(lower=better)"
+                                score_str = f"{inner_score:.4f}" if inner_score is not None and not np.isnan(float(inner_score if inner_score is not None else float('nan'))) else "N/A"
                                 print(
                                     f"    Inner {self.inner_metric}: "
                                     f"{score_str} {direction}"
                                 )
 
-                            # ── Refit on full outer-train ──
+                            # Refit on full outer-train
                             t0 = time.perf_counter()
-
-                            if is_competing and not model_class.supports_competing_risks:
-                                metrics = self._fit_eval_cause_specific(
-                                    model_class, best_config,
-                                    X_train, T_train, cause_train,
-                                    X_test, T_test, cause_test,
-                                    times,
-                                )
-                            elif is_competing and model_class.supports_competing_risks:
-                                metrics = self._fit_eval_native_cr(
-                                    model_class, best_config,
-                                    X_train, T_train, E_train, cause_train,
-                                    X_test, T_test, E_test, cause_test,
-                                    times,
-                                )
-                            else:
-                                model = model_class(**best_config)
-                                model.fit(X_train, T_train, E_train)
-                                metrics = evaluate_model(
-                                    model, X_train, T_train, E_train,
-                                    X_test, T_test, E_test, times,
-                                )
-
+                            model = model_class(**best_config)
+                            model.fit(X_train, T_train, E_train)
+                            metrics = evaluate_model(
+                                model, X_train, T_train, E_train,
+                                X_test, T_test, E_test,
+                            )
                             t_fit = time.perf_counter() - t0
 
                             results.add(
-                                repeat, setup_name, display_name, fold_idx,
+                                repeat, dataset_name, display_name, fold_idx,
                                 metrics, best_config=best_config,
                                 inner_cv_score=inner_score,
                                 fit_time=t_fit, n_samples=n_samples,
@@ -238,82 +212,21 @@ class NestedCVRunner:
                                 print(f"  ERROR {display_name}: {exc}")
                                 traceback.print_exc()
                             results.add(
-                                repeat, setup_name, display_name, fold_idx,
+                                repeat, dataset_name, display_name, fold_idx,
                                 {"status": "error", "error": str(exc)},
                                 n_samples=n_samples,
                             )
 
         return results
 
-    @staticmethod
-    def _fit_eval_cause_specific(
-        model_class, config,
-        X_train, T_train, cause_train,
-        X_test, T_test, cause_test,
-        times,
-    ) -> dict:
-        """Fit cause-specific models and evaluate per cause."""
-        factory = lambda: model_class(**config)  # noqa: E731
-        wrapper = CauseSpecificWrapper(factory)
-        wrapper.fit(X_train, T_train, cause_train, cause=cause_train)
-
-        metrics: dict = {}
-        for cause_k in wrapper._causes:
-            risk_k = wrapper.predict_cause_risk(X_test, cause_k)
-            E_k_test = (cause_test == cause_k).astype(float)
-            if E_k_test.sum() > 0:
-                c = concordance_index(T_test, E_k_test, risk_k)
-                metrics[f"c_index_cause_{cause_k}"] = c
-
-        return metrics
-
-    @staticmethod
-    def _fit_eval_native_cr(
-        model_class, config,
-        X_train, T_train, E_train, cause_train,
-        X_test, T_test, E_test, cause_test,
-        times,
-    ) -> dict:
-        """Fit native competing risks model and evaluate."""
-        model = model_class(**config)
-        model.fit(X_train, T_train, cause_train)
-
-        metrics: dict = {}
-        risk = model.predict_risk(X_test)
-        overall_E = (cause_test > 0).astype(float)
-        metrics["c_index_overall"] = concordance_index(T_test, overall_E, risk)
-
-        causes = sorted(set(int(c) for c in cause_test if c > 0))
-        for cause_k in causes:
-            try:
-                cif = model.predict_cumulative_incidence(X_test, times, cause_k)
-                metrics[f"has_cif_cause_{cause_k}"] = True
-            except NotImplementedError:
-                pass
-
-        return metrics
-
-
-def _eval_times(T: np.ndarray, E: np.ndarray, n_points: int = 100) -> np.ndarray:
-    """Compute evaluation time grid from test data."""
-    event_times = T[E.astype(bool)]
-    if len(event_times) > 0:
-        return np.linspace(
-            event_times.min() + 1e-6,
-            event_times.max() - 1e-6,
-            n_points,
-        )
-    return np.linspace(T.min(), T.max(), n_points)
 
 
 def _min_class_count(y: np.ndarray) -> int:
-    """Minimum number of samples in any class."""
     _, counts = np.unique(y, return_counts=True)
     return int(counts.min())
 
 
 def _print_metrics(name: str, metrics: dict, t_fit: float | None = None) -> None:
-    """Pretty-print metrics for a single model."""
     print(f"    {name}:")
     if t_fit is not None:
         print(f"      fit time: {t_fit:.2f}s")
