@@ -197,17 +197,3 @@ class CVResultsTable:
         df = pd.DataFrame(rows).sort_values("avg_rank").reset_index(drop=True)
         return df
 
-    def to_csv(self, path: str) -> None:
-        """Save raw fold-level results to CSV."""
-        self.to_dataframe().to_csv(path, index=False)
-
-    def to_latex(self, **kwargs) -> str:
-        """LaTeX table with mean +/- SD."""
-        return self.format_table().to_latex(index=False, **kwargs)
-
-    def summary(self) -> str:
-        """Human-readable aggregated summary."""
-        fmt = self.format_table()
-        if fmt.empty:
-            return "No results yet."
-        return fmt.to_string(index=False)

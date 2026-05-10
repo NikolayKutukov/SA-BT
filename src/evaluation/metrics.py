@@ -70,7 +70,7 @@ def _safe_times(
     ev_te = T_test[E_test.astype(bool)]
     if len(ev_tr) == 0 or len(ev_te) == 0:
         return _default_times(T_test, E_test, n_points)
-    lo = max(np.percentile(ev_tr, 5), np.percentile(ev_te, 5), 1e-6)
+    lo = max(np.percentile(ev_tr, 5), 1e-6)
     hi = _ipcw_tau(T_train, E_train, T_test, E_test)
     if lo >= hi:
         return _default_times(T_test, E_test, n_points)

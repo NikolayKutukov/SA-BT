@@ -15,8 +15,12 @@ from src.models.base import SurvivalModel
 
 # ── numpy 2.x compat patch for survlimepy ────────────────────────────
 # survlimepy uses np.reshape(x, newshape=...) which was renamed to
-# shape= in numpy 2.x.  Patch once at import time.
-_orig_reshape = np.reshape
+# shape= in numpy 2.x.  Store the true original on np itself so that
+# repeated reload() calls never chain multiple patched versions.
+if not hasattr(np, "_orig_reshape_survlime_compat"):
+    np._orig_reshape_survlime_compat = np.reshape  # type: ignore[attr-defined]
+
+_orig_reshape = np._orig_reshape_survlime_compat  # always the real original
 
 
 def _patched_reshape(a, *args, **kwargs):
@@ -77,7 +81,7 @@ def _make_sksurv_adapter(model: SurvivalModel, X_train: np.ndarray, T_train: np.
     """Create an adapter object compatible with survshap for non-sksurv models."""
 
     class _SurvModelAdapter:
-        """Lightweight adapter exposing predict_survival_function for survshap."""
+        """Lightweight adapter exposing sksurv-like prediction methods for survshap."""
 
         def __init__(self, model, X_train, T_train, E_train):
             self._model = model
@@ -90,10 +94,22 @@ def _make_sksurv_adapter(model: SurvivalModel, X_train: np.ndarray, T_train: np.
             sf = self._model.predict_survival_function(np.atleast_2d(X), times)
 
             # survshap expects list of StepFunction-like objects
-            from sksurv.nonparametric import StepFunction
+            from sksurv.functions import StepFunction
             result = []
             for i in range(sf.shape[0]):
                 result.append(StepFunction(times, sf[i]))
+            return result
+
+        def predict_cumulative_hazard_function(self, X):
+            times = self._unique_times
+            sf = self._model.predict_survival_function(np.atleast_2d(X), times)
+            chf = -np.log(np.clip(sf, 1e-10, 1.0))
+
+            # survshap expects list of StepFunction-like objects
+            from sksurv.functions import StepFunction
+            result = []
+            for i in range(chf.shape[0]):
+                result.append(StepFunction(times, chf[i]))
             return result
 
         def predict(self, X):
@@ -291,6 +307,7 @@ class SurvSHAPExplainer:
         T_train: np.ndarray,
         E_train: np.ndarray,
         feature_names: list[str] | None = None,
+        function_type: str = "sf",
     ) -> None:
         from survshap import SurvivalModelExplainer
 
@@ -303,6 +320,7 @@ class SurvSHAPExplainer:
         if feature_names is None:
             feature_names = [f"X{i}" for i in range(X_train.shape[1])]
         self._feature_names = feature_names
+        self._function_type = function_type
 
         # Structured array for survshap
         self._y_train = Surv.from_arrays(E_train.astype(bool), T_train)
@@ -353,7 +371,7 @@ class SurvSHAPExplainer:
             np.atleast_2d(x_instance), columns=self._feature_names,
         )
 
-        shap_obj = PredictSurvSHAP()
+        shap_obj = PredictSurvSHAP(function_type=self._function_type)
         shap_obj.fit(
             explainer=self._explainer,
             new_observation=obs_df,

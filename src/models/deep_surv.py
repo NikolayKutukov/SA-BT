@@ -109,9 +109,20 @@ class DeepSurvModel(SurvivalModel):
         """Predict S(t|X) = exp(-H0(t) * exp(log_ph(x)))."""
         log_ph = self._model.predict(X.astype("float32")).flatten()  # (n,)
 
-        bh = self._model.baseline_hazards_
-        cum_bh = np.cumsum(bh.values.flatten().astype(float))
-        H0_at_times = np.interp(times, bh.index.values.astype(float), cum_bh, left=0.0)
+        bh = self._model.baseline_hazards_.copy()
+        bh.index = bh.index.astype(float)
+        bh = bh.sort_index().groupby(level=0).sum()
+
+        event_times = bh.index.values.astype(float)
+        increments = np.clip(bh.values.flatten().astype(float), 0.0, None)
+        cum_bh = np.maximum.accumulate(np.cumsum(increments))
+        H0_at_times = np.interp(
+            times,
+            event_times,
+            cum_bh,
+            left=0.0,
+            right=cum_bh[-1],
+        )
 
         out = np.exp(-H0_at_times[None, :] * np.exp(log_ph)[:, None])
         return np.clip(out, 0.0, 1.0)

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
-import numpy as np
 import pandas as pd
 
 
@@ -42,15 +40,3 @@ class ResultsTable:
             df = df.sort_values(["setup", "model"]).reset_index(drop=True)
         return df
 
-    def to_csv(self, path: str) -> None:
-        self.to_dataframe().to_csv(path, index=False)
-
-    def to_latex(self, **kwargs: Any) -> str:
-        return self.to_dataframe().to_latex(index=False, float_format="%.3f", **kwargs)
-
-    def summary(self) -> str:
-        """Human-readable summary table."""
-        df = self.to_dataframe()
-        if len(df) == 0:
-            return "No results yet."
-        return df.to_string(index=False, float_format=lambda x: f"{x:.4f}")
